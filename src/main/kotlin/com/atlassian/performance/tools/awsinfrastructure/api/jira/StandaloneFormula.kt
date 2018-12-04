@@ -3,6 +3,7 @@ package com.atlassian.performance.tools.awsinfrastructure.api.jira
 import com.amazonaws.services.cloudformation.model.Parameter
 import com.amazonaws.services.ec2.model.Tag
 import com.atlassian.performance.tools.aws.api.*
+import com.atlassian.performance.tools.awsinfrastructure.JiraStoragePaths
 import com.atlassian.performance.tools.awsinfrastructure.TemplateBuilder
 import com.atlassian.performance.tools.awsinfrastructure.api.RemoteLocation
 import com.atlassian.performance.tools.awsinfrastructure.api.hardware.C4EightExtraLargeElastic
@@ -16,15 +17,19 @@ import com.atlassian.performance.tools.infrastructure.api.jira.JiraHomeSource
 import com.atlassian.performance.tools.infrastructure.api.jira.JiraJvmArgs
 import com.atlassian.performance.tools.infrastructure.api.jira.JiraLaunchTimeouts
 import com.atlassian.performance.tools.infrastructure.api.jira.JiraNodeConfig
+import com.atlassian.performance.tools.io.api.ensureDirectory
 import com.atlassian.performance.tools.jvmtasks.api.TaskTimer.time
 import com.atlassian.performance.tools.ssh.api.Ssh
 import com.atlassian.performance.tools.ssh.api.SshHost
 import com.google.common.util.concurrent.ThreadFactoryBuilder
+import org.apache.commons.codec.digest.DigestUtils
 import org.apache.logging.log4j.CloseableThreadContext
 import org.apache.logging.log4j.LogManager
 import org.apache.logging.log4j.Logger
 import java.net.URI
 import java.time.Duration
+import java.nio.file.Files
+import java.util.*
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 
@@ -47,16 +52,7 @@ class StandaloneFormula(
         application = application,
         jiraHomeSource = jiraHomeSource,
         database = database,
-        config = JiraNodeConfig(
-            name = "jira-node",
-            jvmArgs = JiraJvmArgs(),
-            launchTimeouts = JiraLaunchTimeouts(
-                offlineTimeout = Duration.ofMinutes(8),
-                initTimeout = Duration.ofMinutes(4),
-                upgradeTimeout = Duration.ofMinutes(8),
-                unresponsivenessTimeout = Duration.ofMinutes(4)
-            )
-        ),
+        config = JiraNodeConfig.Builder().build(),
         computer = C4EightExtraLargeElastic()
     )
 
@@ -102,8 +98,35 @@ class StandaloneFormula(
             ).provision()
         }
 
-        val uploadPlugins = executor.submitWithLogContext("upload plugins") {
-            apps.listFiles().forEach { pluginsTransport.upload(it) }
+        val uploadJiraStorage = executor.submitWithLogContext("JiraStorage bucket") {
+            val jiraStorageDir = createTempDir("jira-storage")
+            val installedPlugins = jiraStorageDir.resolve(JiraStoragePaths.APPS).ensureDirectory()
+            logger.info("Copying Apps into $installedPlugins")
+
+            // apps to install
+            apps.listFiles().forEach { it.copyTo(installedPlugins) }
+
+            // collectd
+            val collectdConf = jiraStorageDir.resolve(JiraStoragePaths.COLLECTD_CONFIGS).ensureDirectory()
+            logger.info("Copying collectd configs into $collectdConf")
+            config.collectdConfigs.stream().filter(Objects::nonNull).forEach{ uri ->
+                val urlMd5 = DigestUtils.md5(uri.toString())
+                val filename = urlMd5.joinToString("") { String.format("%02X", (it.toInt() and 0xFF)) }
+                val target = collectdConf.toPath().resolve("$filename.conf")
+                try {
+                    Files.copy(uri.toURL().openStream(), target)
+                    logger.info("Copied '$uri' to '$target'")
+                } catch (e: Exception) {
+                    logger.warn("Failed to copy '$uri' to '$target'", e)
+                }
+            }
+            val collectdJar = jiraStorageDir.resolve(JiraStoragePaths.COLLECTD_JARS).ensureDirectory()
+            Files.copy(javaClass.getResourceAsStream("/collectd/generic-jmx.jar"),
+                collectdJar.toPath().resolve("generic-jmx.jar"))
+
+            // upload to Jira storage
+            logger.info("Uploading to JiraStorage bucket")
+            jiraStorageDir.listFiles().forEach { pluginsTransport.upload(it) }
         }
 
         val jiraStack = stackProvisioning.get()
@@ -145,7 +168,7 @@ class StandaloneFormula(
             computer = computer
         )
 
-        uploadPlugins.get()
+        uploadJiraStorage.get()
 
         val provisionedNode = nodeFormula.provision()
 

@@ -30,7 +30,8 @@ class StartedNode(
                 "cp ${JiraGcLog(unpackedProduct).path()} $nodeResultsDirectory",
                 "cp /var/log/syslog $nodeResultsDirectory",
                 "cp /var/log/cloud-init.log $nodeResultsDirectory",
-                "cp /var/log/cloud-init-output.log $nodeResultsDirectory"
+                "cp /var/log/cloud-init-output.log $nodeResultsDirectory",
+                "cp -R /var/lib/collectd $nodeResultsDirectory"
             )
                 .plus(monitoringProcesses.map { "cp ${it.logFile} $nodeResultsDirectory" })
                 .plus("find $nodeResultsDirectory -empty -type f -delete")

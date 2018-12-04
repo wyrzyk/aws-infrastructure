@@ -3,6 +3,7 @@ package com.atlassian.performance.tools.awsinfrastructure.jira
 import com.atlassian.performance.tools.aws.api.Storage
 import com.atlassian.performance.tools.awsinfrastructure.AwsCli
 import com.atlassian.performance.tools.awsinfrastructure.api.hardware.Computer
+import com.atlassian.performance.tools.awsinfrastructure.JiraStoragePaths
 import com.atlassian.performance.tools.awsinfrastructure.api.storage.ApplicationStorage
 import com.atlassian.performance.tools.infrastructure.api.Sed
 import com.atlassian.performance.tools.infrastructure.api.jira.JiraGcLog
@@ -15,9 +16,11 @@ import com.atlassian.performance.tools.infrastructure.api.os.Ubuntu
 import com.atlassian.performance.tools.jvmtasks.api.TaskTimer
 import com.atlassian.performance.tools.ssh.api.Ssh
 import com.atlassian.performance.tools.ssh.api.SshConnection
+import org.apache.commons.codec.digest.DigestUtils
 import org.apache.logging.log4j.LogManager
 import org.apache.logging.log4j.Logger
 import java.time.Duration
+import java.util.*
 
 internal class StandaloneNodeFormula(
     private val jiraHomeSource: JiraHomeSource,
@@ -59,7 +62,8 @@ internal class StandaloneNodeFormula(
             connection.execute("wget -q https://dev.mysql.com/get/Downloads/Connector-J/mysql-connector-java-5.1.40.tar.gz")
             connection.execute("tar -xzf mysql-connector-java-5.1.40.tar.gz")
             connection.execute("cp mysql-connector-java-5.1.40/mysql-connector-java-5.1.40-bin.jar $unpackedProduct/lib")
-            AwsCli().download(pluginsTransport.location, connection, target = "$jiraHome/plugins/installed-plugins")
+
+            provisionFromJiraStorage(connection, jiraHome)
 
             jdk.install(connection)
             val osMetrics = ubuntu.metrics(connection)
@@ -94,6 +98,55 @@ internal class StandaloneNodeFormula(
             .output
             .split("/")
             .first()
+    }
+
+    private fun installAndConfigureCollectd(
+        connection: SshConnection,
+        jiraStorageDir: String
+    ) {
+        val jmxPort = config.remoteJmx.getRequiredPorts().firstOrNull()
+        val configDir = "$jiraStorageDir/${JiraStoragePaths.COLLECTD_CONFIGS}"
+        if (jmxPort != null) {
+            Sed().replace(
+                connection = connection,
+                expression = "localhost:3333",
+                output = "localhost:$jmxPort",
+                file = "$configDir/*.conf")
+        }
+        ubuntu.install(connection, listOf("collectd"))
+
+        config.collectdConfigs
+            .stream()
+            .filter(Objects::nonNull)
+            .map { url -> DigestUtils.md5(url.toString()) }
+            .map { md5 -> md5.joinToString("") { String.format("%02X", (it.toInt() and 0xFF)) }}
+            .forEach {
+                filename -> connection.execute("sudo mv $configDir/$filename.conf /etc/collectd/collectd.conf.d")
+        }
+        connection.execute("sudo mv $jiraStorageDir/${JiraStoragePaths.COLLECTD_JARS}/* /usr/share/collectd/java")
+        connection.execute("sudo systemctl restart collectd.service")
+    }
+
+    private fun installPlugins(
+        connection: SshConnection,
+        jiraStorageDir: String,
+        jiraHome: String
+    ) {
+        val targetDir = "$jiraHome/plugins/installed-plugins"
+        connection.execute("mkdir -p $targetDir")
+        connection.safeExecute("mv $jiraStorageDir/${JiraStoragePaths.APPS}/* $targetDir")
+    }
+
+    private fun provisionFromJiraStorage(
+        connection: SshConnection,
+        jiraHome: String
+    ) {
+        val jiraStorageDir = "/tmp/jira-storage"
+        connection.execute("mkdir -p $jiraStorageDir")
+        AwsCli().download(pluginsTransport.location, connection, target = jiraStorageDir)
+
+        installPlugins(connection, jiraStorageDir, jiraHome)
+        installAndConfigureCollectd(connection, jiraStorageDir)
     }
 
     private fun replaceDbconfigUrl(

@@ -19,16 +19,17 @@ import com.atlassian.performance.tools.concurrency.api.submitWithLogContext
 import com.atlassian.performance.tools.infrastructure.api.app.Apps
 import com.atlassian.performance.tools.infrastructure.api.database.Database
 import com.atlassian.performance.tools.infrastructure.api.jira.JiraHomeSource
-import com.atlassian.performance.tools.infrastructure.api.jira.JiraJvmArgs
-import com.atlassian.performance.tools.infrastructure.api.jira.JiraLaunchTimeouts
 import com.atlassian.performance.tools.infrastructure.api.jira.JiraNodeConfig
+import com.atlassian.performance.tools.io.api.ensureDirectory
 import com.atlassian.performance.tools.jvmtasks.api.TaskTimer.time
 import com.atlassian.performance.tools.ssh.api.Ssh
 import com.atlassian.performance.tools.ssh.api.SshHost
 import com.google.common.util.concurrent.ThreadFactoryBuilder
+import org.apache.commons.codec.digest.DigestUtils
 import org.apache.logging.log4j.CloseableThreadContext
 import org.apache.logging.log4j.LogManager
 import org.apache.logging.log4j.Logger
+import java.nio.file.Files
 import java.time.Duration
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
@@ -54,16 +55,9 @@ class DataCenterFormula(
         jiraHomeSource: JiraHomeSource,
         database: Database
     ) : this(
-        configs = JiraNodeConfig(
-                name = "jira-node",
-                jvmArgs = JiraJvmArgs(),
-                launchTimeouts = JiraLaunchTimeouts(
-                        offlineTimeout = Duration.ofMinutes(8),
-                        initTimeout = Duration.ofMinutes(4),
-                        upgradeTimeout = Duration.ofMinutes(8),
-                        unresponsivenessTimeout = Duration.ofMinutes(4)
-                )
-        ).clone(times = 2),
+        configs = listOf(
+            JiraNodeConfig.Builder().name("jira-node-1").build(),
+            JiraNodeConfig.Builder().name("jira-node-2").build()),
         loadBalancerFormula = ElasticLoadBalancerFormula(),
         apps = apps,
         application = application,
@@ -114,8 +108,27 @@ class DataCenterFormula(
             ).provision()
         }
 
-        val uploadPlugins = executor.submitWithLogContext("upload plugins") {
-            apps.listFiles().forEach { pluginsTransport.upload(it) }
+        val uploadJiraStorage = executor.submitWithLogContext("preparing Jira data") {
+            val jiraStorageDir = createTempDir("jira-storage")
+            val installedPlugins = jiraStorageDir.resolve("installed-plugins").ensureDirectory()
+
+            // apps to install
+            apps.listFiles().forEach { it.copyTo(installedPlugins) }
+
+            // collectd
+            val collectdConf = jiraStorageDir.resolve("collectd.conf.d").ensureDirectory()
+            configs.forEach { config ->
+                config.collectdConfigs.forEach { uri ->
+                    val urlMd5 = DigestUtils.md5(uri.toString())
+                    val filename = urlMd5.joinToString("") { String.format("%02X", (it.toInt() and 0xFF)) }
+                    Files.copy(uri.toURL().openStream(), collectdConf.toPath().resolve("$filename.conf"))
+                }
+            }
+            val collectdJar = jiraStorageDir.resolve("collectdjars").ensureDirectory()
+            Files.copy(javaClass.getResourceAsStream("/collectd/generic-jmx.jar"), collectdJar.toPath())
+
+            // upload to Jira storage
+            jiraStorageDir.listFiles().forEach { pluginsTransport.upload(it) }
         }
 
         val jiraStack = stackProvisioning.get()
@@ -142,7 +155,7 @@ class DataCenterFormula(
             )
         }
 
-        uploadPlugins.get()
+        uploadJiraStorage.get()
         val sharedHome = executor.submitWithLogContext("provision shared home") {
             logger.info("Setting up shared home...")
             key.get().file.facilitateSsh(sharedHomeIp)
