@@ -4,6 +4,7 @@ import com.amazonaws.services.cloudformation.model.Parameter
 import com.amazonaws.services.ec2.model.AvailabilityZone
 import com.amazonaws.services.ec2.model.Tag
 import com.atlassian.performance.tools.aws.api.*
+import com.atlassian.performance.tools.awsinfrastructure.JiraStoragePaths
 import com.atlassian.performance.tools.awsinfrastructure.TemplateBuilder
 import com.atlassian.performance.tools.awsinfrastructure.api.RemoteLocation
 import com.atlassian.performance.tools.awsinfrastructure.api.hardware.C4EightExtraLargeElastic
@@ -110,22 +111,26 @@ class DataCenterFormula(
 
         val uploadJiraStorage = executor.submitWithLogContext("preparing Jira data") {
             val jiraStorageDir = createTempDir("jira-storage")
-            val installedPlugins = jiraStorageDir.resolve("installed-plugins").ensureDirectory()
+            val installedPlugins = jiraStorageDir.resolve(JiraStoragePaths.APPS).ensureDirectory()
 
             // apps to install
             apps.listFiles().forEach { it.copyTo(installedPlugins) }
 
             // collectd
-            val collectdConf = jiraStorageDir.resolve("collectd.conf.d").ensureDirectory()
+            val collectdConf = jiraStorageDir.resolve(JiraStoragePaths.COLLECTD_CONFIGS).ensureDirectory()
             configs.forEach { config ->
                 config.collectdConfigs.forEach { uri ->
                     val urlMd5 = DigestUtils.md5(uri.toString())
                     val filename = urlMd5.joinToString("") { String.format("%02X", (it.toInt() and 0xFF)) }
-                    Files.copy(uri.toURL().openStream(), collectdConf.toPath().resolve("$filename.conf"))
+                    val targetPath = collectdConf.toPath().resolve("$filename.conf")
+                    if (!Files.exists(targetPath)) {
+                        Files.copy(uri.toURL().openStream(), targetPath)
+                    }
                 }
             }
-            val collectdJar = jiraStorageDir.resolve("collectdjars").ensureDirectory()
-            Files.copy(javaClass.getResourceAsStream("/collectd/generic-jmx.jar"), collectdJar.toPath())
+            val collectdJars = jiraStorageDir.resolve(JiraStoragePaths.COLLECTD_JARS).ensureDirectory()
+            Files.copy(javaClass.getResourceAsStream("/collectd/generic-jmx.jar"),
+                collectdJars.toPath().resolve("generic-jmx.jar"))
 
             // upload to Jira storage
             jiraStorageDir.listFiles().forEach { pluginsTransport.upload(it) }

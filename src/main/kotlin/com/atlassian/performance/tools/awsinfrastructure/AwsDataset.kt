@@ -15,8 +15,6 @@ import com.atlassian.performance.tools.awsinfrastructure.api.virtualusers.Absent
 import com.atlassian.performance.tools.infrastructure.api.app.Apps
 import com.atlassian.performance.tools.infrastructure.api.app.NoApp
 import com.atlassian.performance.tools.infrastructure.api.dataset.Dataset
-import com.atlassian.performance.tools.infrastructure.api.jira.JiraJvmArgs
-import com.atlassian.performance.tools.infrastructure.api.jira.JiraLaunchTimeouts
 import com.atlassian.performance.tools.infrastructure.api.jira.JiraNodeConfig
 import com.atlassian.performance.tools.workspace.api.TestWorkspace
 import org.apache.logging.log4j.LogManager.getLogger
@@ -57,16 +55,7 @@ internal class AwsDataset(
                 database = dataset.database,
                 jiraHomeSource = dataset.jiraHomeSource,
                 application = JiraSoftwareStorage("7.2.0"),
-                config = JiraNodeConfig(
-                    name = "jira-node",
-                    jvmArgs = JiraJvmArgs(),
-                    launchTimeouts = JiraLaunchTimeouts(
-                        offlineTimeout = Duration.ofMinutes(8),
-                        initTimeout = Duration.ofMinutes(4),
-                        upgradeTimeout = Duration.ofMinutes(8),
-                        unresponsivenessTimeout = Duration.ofMinutes(4)
-                    )
-                ),
+                config = JiraNodeConfig.Builder().build(),
                 computer = C5NineExtraLargeEphemeral()
             ),
             virtualUsersFormula = AbsentVirtualUsersFormula(),

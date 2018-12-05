@@ -10,9 +10,8 @@ import com.atlassian.performance.tools.awsinfrastructure.api.loadbalancer.Elasti
 import com.atlassian.performance.tools.awsinfrastructure.api.storage.JiraSoftwareStorage
 import com.atlassian.performance.tools.infrastructure.api.app.Apps
 import com.atlassian.performance.tools.infrastructure.api.app.NoApp
-import com.atlassian.performance.tools.infrastructure.api.jira.JiraJvmArgs
-import com.atlassian.performance.tools.infrastructure.api.jira.JiraLaunchTimeouts
 import com.atlassian.performance.tools.infrastructure.api.jira.JiraNodeConfig
+import com.atlassian.performance.tools.infrastructure.api.jvm.jmx.EnabledRemoteJmx
 import org.junit.Test
 import java.time.Duration
 import java.util.*
@@ -34,16 +33,9 @@ class DataCenterFormulaIT {
             prefix = nonce
         )
         val dcFormula = DataCenterFormula(
-            configs = JiraNodeConfig(
-                name = "jira-node",
-                jvmArgs = JiraJvmArgs(),
-                launchTimeouts = JiraLaunchTimeouts(
-                    offlineTimeout = Duration.ofMinutes(8),
-                    initTimeout = Duration.ofMinutes(4),
-                    upgradeTimeout = Duration.ofMinutes(8),
-                    unresponsivenessTimeout = Duration.ofMinutes(4)
-                )
-            ).clone(2),
+            configs = listOf(
+                JiraNodeConfig.Builder().name("jira-node-1").remoteJmx(EnabledRemoteJmx()).build(),
+                JiraNodeConfig.Builder().name("jira-node-2").remoteJmx(EnabledRemoteJmx()).build()),
             loadBalancerFormula = ElasticLoadBalancerFormula(),
             apps = Apps(listOf(NoApp())),
             application = JiraSoftwareStorage("7.2.0"),
