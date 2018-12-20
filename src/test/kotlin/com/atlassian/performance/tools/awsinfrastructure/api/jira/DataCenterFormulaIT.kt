@@ -4,6 +4,7 @@ import com.atlassian.performance.tools.aws.api.Investment
 import com.atlassian.performance.tools.aws.api.SshKeyFormula
 import com.atlassian.performance.tools.awsinfrastructure.IntegrationTestRuntime
 import com.atlassian.performance.tools.awsinfrastructure.api.DatasetCatalogue
+import com.atlassian.performance.tools.awsinfrastructure.api.database.DockerDatabaseFormula
 import com.atlassian.performance.tools.awsinfrastructure.api.hardware.C5NineExtraLargeEphemeral
 import com.atlassian.performance.tools.awsinfrastructure.api.storage.JiraSoftwareStorage
 import com.atlassian.performance.tools.concurrency.api.submitWithLogContext
@@ -76,6 +77,7 @@ class DataCenterFormulaIT {
             val dcFormula = DataCenterFormula.Builder(
                 application = JiraSoftwareStorage(jiraVersion),
                 jiraHomeSource = dataset.jiraHomeSource,
+                //TODO change this to databaseformula
                 database = dataset.database
             ).computer(C5NineExtraLargeEphemeral())
                 .build()

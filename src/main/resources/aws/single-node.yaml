@@ -11,7 +11,9 @@ Parameters:
     Type: String
   JiraInstanceType:
     Type: String
-  AvailabilityZone:
+  AvailabilityZone1:
+    Type: AWS::EC2::AvailabilityZone::Name
+  AvailabilityZone2:
     Type: AWS::EC2::AvailabilityZone::Name
 Resources:
   VPC:
@@ -19,15 +21,27 @@ Resources:
     Properties:
       EnableDnsSupport: true
       EnableDnsHostnames: true
-      CidrBlock: 10.0.0.0/24
-  Subnet:
+      CidrBlock: 10.0.0.0/16
+  Subnet1:
     Type: AWS::EC2::Subnet
     Properties:
       MapPublicIpOnLaunch: true
+      AvailabilityZone: !Ref AvailabilityZone1
       CidrBlock: 10.0.0.0/24
       VpcId:
         Ref: VPC
-      AvailabilityZone: !Ref AvailabilityZone
+      Tags:
+        - Key: Application
+          Value:
+            Ref: AWS::StackId
+  Subnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Ref AvailabilityZone2
+      CidrBlock: 10.0.1.0/24
+      VpcId:
+        Ref: VPC
       Tags:
         - Key: Application
           Value:
@@ -43,13 +57,20 @@ Resources:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref VPC
-  SubnetRouteTableAssoc:
+  SubnetRouteTableAssoc1:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       RouteTableId:
         Ref: RouteTable
       SubnetId:
-        Ref: Subnet
+        Ref: Subnet1
+  SubnetRouteTableAssoc2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId:
+        Ref: RouteTable
+      SubnetId:
+        Ref: Subnet2
   InternetGatewayRoute:
     Type: AWS::EC2::Route
     Properties:
@@ -59,35 +80,12 @@ Resources:
       GatewayId:
         Ref: InternetGateway
     DependsOn: AttachGateway
-  Database:
-    Type: AWS::EC2::Instance
-    Properties:
-      InstanceType: m4.xlarge
-      SubnetId:
-        Ref: Subnet
-      SecurityGroupIds:
-        - Ref: SshSecurityGroup
-        - Ref: MySqlSecurityGroup
-      KeyName:
-        Ref: KeyName
-      ImageId: !Ref Ami
-      Tags:
-        -
-          Key: jpt-database
-          Value: true
-      IamInstanceProfile: !Ref InstanceProfile
-      BlockDeviceMappings:
-        -
-          DeviceName: /dev/sda1
-          Ebs:
-            VolumeSize: 100
-            VolumeType: gp2
   JIRA:
     Type: AWS::EC2::Instance
     Properties:
       InstanceType: !Ref JiraInstanceType
       SubnetId:
-        Ref: Subnet
+        Ref: Subnet1
       SecurityGroupIds:
         - Ref: SshSecurityGroup
         - Ref: TomcatSecurityGroup
@@ -128,16 +126,4 @@ Resources:
           IpProtocol: tcp
           FromPort: 8080
           ToPort: 8080
-          CidrIp: 0.0.0.0/0
-  MySqlSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      VpcId:
-        Ref: VPC
-      GroupDescription: Enables MySql access
-      SecurityGroupIngress:
-        -
-          IpProtocol: tcp
-          FromPort: 3306
-          ToPort: 3306
           CidrIp: 0.0.0.0/0

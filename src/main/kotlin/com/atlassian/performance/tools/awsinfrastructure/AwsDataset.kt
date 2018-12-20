@@ -7,6 +7,8 @@ import com.atlassian.performance.tools.awsinfrastructure.api.CustomDatasetSource
 import com.atlassian.performance.tools.awsinfrastructure.api.Infrastructure
 import com.atlassian.performance.tools.awsinfrastructure.api.InfrastructureFormula
 import com.atlassian.performance.tools.awsinfrastructure.api.ProvisionedInfrastructure
+import com.atlassian.performance.tools.awsinfrastructure.api.database.DatabaseFormula
+import com.atlassian.performance.tools.awsinfrastructure.api.database.DockerDatabaseFormula
 import com.atlassian.performance.tools.awsinfrastructure.api.hardware.C5NineExtraLargeEphemeral
 import com.atlassian.performance.tools.awsinfrastructure.api.jira.Jira
 import com.atlassian.performance.tools.awsinfrastructure.api.jira.StandaloneFormula
@@ -53,6 +55,7 @@ internal class AwsDataset(
                 lifespan = Duration.ofMinutes(50)
             ),
             jiraFormula = StandaloneFormula.Builder(
+                //TODO change this to database formula
                 database = dataset.database,
                 jiraHomeSource = dataset.jiraHomeSource,
                 application = JiraSoftwareStorage("7.2.0")

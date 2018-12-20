@@ -10,7 +10,10 @@ import com.fasterxml.jackson.dataformat.yaml.YAMLGenerator
 
 // This is a workaround for JPT-296. Please use EC2 API instead of template hacking when fixed.
 internal class TemplateBuilder(baseTemplateName: String) {
-    private val template = readResourceText("aws/$baseTemplateName").replace("!Ref", "__Ref__")
+    private val template = readTemplateResourceText(baseTemplateName)
+
+    private fun readTemplateResourceText(baseTemplateName: String) =
+        readResourceText("aws/$baseTemplateName").replace("!Ref", "__Ref__")
 
     private val mapper = ObjectMapper(YAMLFactory()
         .enable(YAMLGenerator.Feature.MINIMIZE_QUOTES)
@@ -77,8 +80,32 @@ internal class TemplateBuilder(baseTemplateName: String) {
         (mappedTemplate as ObjectNode).put("Description", description)
     }
 
+    fun mergeWith(
+        otherTemplateName: String,
+        nodesToMerge: Array<String>
+    ): TemplateBuilder {
+        val otherMappedTemplate = mapper.readTree(readTemplateResourceText(otherTemplateName))
+        for (nodeToMerge in nodesToMerge) {
+            if (otherMappedTemplate.has(nodeToMerge)) {
+                val otherNode = otherMappedTemplate.get(nodeToMerge) as ObjectNode
+                val originalNode = mappedTemplate.with(nodeToMerge) as ObjectNode
+
+                for (fieldName in otherNode.fieldNames()) {
+                    originalNode.put(fieldName, otherNode.get(fieldName))
+                }
+            }
+        }
+
+        return this
+    }
+
     fun build(): String {
         val result = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(mappedTemplate)
         return result.replace("__Ref__", "!Ref")
     }
+}
+
+fun main(args: Array<String>) {
+    print(TemplateBuilder("single-node.yaml")
+        .mergeWith("mysql-ec2.yaml", arrayOf("Resources", "Parameters")).build())
 }

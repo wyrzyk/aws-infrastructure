@@ -5,6 +5,8 @@ import com.amazonaws.services.ec2.model.Tag
 import com.atlassian.performance.tools.aws.api.*
 import com.atlassian.performance.tools.awsinfrastructure.TemplateBuilder
 import com.atlassian.performance.tools.awsinfrastructure.api.RemoteLocation
+import com.atlassian.performance.tools.awsinfrastructure.api.database.DatabaseFormula
+import com.atlassian.performance.tools.awsinfrastructure.api.database.DockerDatabaseFormula
 import com.atlassian.performance.tools.awsinfrastructure.api.hardware.C4EightExtraLargeElastic
 import com.atlassian.performance.tools.awsinfrastructure.api.hardware.Computer
 import com.atlassian.performance.tools.awsinfrastructure.api.loadbalancer.ElasticLoadBalancerFormula
@@ -41,11 +43,27 @@ class DataCenterFormula private constructor(
     private val apps: Apps,
     private val application: ApplicationStorage,
     private val jiraHomeSource: JiraHomeSource,
-    private val database: Database,
+    private val databaseFormula: DatabaseFormula,
     private val computer: Computer,
     private val stackCreationTimeout: Duration
 ) : JiraFormula {
     private val logger: Logger = LogManager.getLogger(this::class.java)
+
+    @Deprecated(message = "Use DataCenterFormula.Builder instead.")
+    constructor(
+        apps: Apps,
+        application: ApplicationStorage,
+        jiraHomeSource: JiraHomeSource,
+        database: Database
+    ) : this(
+        configs = (1..2).map { JiraNodeConfig.Builder().name("jira-node-$it").build() },
+        loadBalancerFormula = ElasticLoadBalancerFormula(),
+        apps = apps,
+        application = application,
+        jiraHomeSource = jiraHomeSource,
+        database = database,
+        computer = C4EightExtraLargeElastic()
+    )
 
     @Deprecated(message = "Use DataCenterFormula.Builder instead.")
     constructor(
@@ -62,25 +80,8 @@ class DataCenterFormula private constructor(
         apps = apps,
         application = application,
         jiraHomeSource = jiraHomeSource,
-        database = database,
+        databaseFormula = DockerDatabaseFormula(database),
         computer = computer,
-        stackCreationTimeout = Duration.ofMinutes(30)
-    )
-
-    @Deprecated(message = "Use DataCenterFormula.Builder instead.")
-    constructor(
-        apps: Apps,
-        application: ApplicationStorage,
-        jiraHomeSource: JiraHomeSource,
-        database: Database
-    ) : this(
-        configs = (1..2).map { JiraNodeConfig.Builder().name("jira-node-$it").build() },
-        loadBalancerFormula = ElasticLoadBalancerFormula(),
-        apps = apps,
-        application = application,
-        jiraHomeSource = jiraHomeSource,
-        database = database,
-        computer = C4EightExtraLargeElastic(),
         stackCreationTimeout = Duration.ofMinutes(30)
     )
 
@@ -100,7 +101,10 @@ class DataCenterFormula private constructor(
                 .build()
         )
 
-        val template = TemplateBuilder("2-nodes-dc.yaml").adaptTo(configs)
+        val template = TemplateBuilder("2-nodes-dc.yaml")
+            .mergeWith(getCloudFormationTemplateForDatabase(databaseFormula.database), arrayOf("Resources", "Parameters"))
+            .adaptTo(configs)
+
         val stackProvisioning = executor.submitWithLogContext("provision stack") {
             StackFormula(
                 investment = investment,
@@ -202,24 +206,14 @@ class DataCenterFormula private constructor(
         val databaseSsh = Ssh(databaseHost, connectivityPatience = 5)
         val provisionedLoadBalancer = futureLoadBalancer.get()
         val loadBalancer = provisionedLoadBalancer.loadBalancer
-        val setupDatabase = executor.submitWithLogContext("database") {
-            databaseSsh.newConnection().use {
-                logger.info("Setting up database...")
-                key.get().file.facilitateSsh(databaseIp)
-                val location = database.setup(it)
-                logger.info("Database is set up")
-                logger.info("Starting database...")
-                database.start(loadBalancer.uri, it)
-                logger.info("Database is started")
-                RemoteLocation(databaseHost, location)
-            }
+
+        val futureProvisionedDatabase: Future<DatabaseFormula.ProvisionedDatabase> = executor.submitWithLogContext("database") {
+            databaseFormula.provision(key.get(), loadBalancer.uri, jiraStack, aws)
         }
 
         val nodesProvisioning = nodeFormulas.map {
             executor.submitWithLogContext("provision $it") { it.provision() }
         }
-
-        val databaseDataLocation = setupDatabase.get()
 
         val nodes = nodesProvisioning
             .map { it.get() }
@@ -230,13 +224,15 @@ class DataCenterFormula private constructor(
             loadBalancer.waitUntilHealthy(Duration.ofMinutes(5))
         }
 
+        val provisionedDatabase: DatabaseFormula.ProvisionedDatabase = futureProvisionedDatabase.get()
+        val remoteDatabaseDataLocation = provisionedDatabase.remoteDatabaseDataLocation
         val jira = Jira(
             nodes = nodes,
             jiraHome = RemoteLocation(
                 sharedHomeSsh.host,
                 sharedHome.get().remoteSharedHome
             ),
-            database = databaseDataLocation,
+            database = remoteDatabaseDataLocation,
             address = loadBalancer.uri,
             jmxClients = jiraNodes.mapIndexed { i, node -> configs[i].remoteJmx.getClient(node.publicIpAddress) }
         )
@@ -279,7 +275,7 @@ class DataCenterFormula private constructor(
             apps = apps,
             application = application,
             jiraHomeSource = jiraHomeSource,
-            database = database,
+            databaseFormula = DockerDatabaseFormula(database),
             computer = computer,
             stackCreationTimeout = stackCreationTimeout
 

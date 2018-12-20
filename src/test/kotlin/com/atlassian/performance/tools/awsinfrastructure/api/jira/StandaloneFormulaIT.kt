@@ -5,6 +5,7 @@ import com.atlassian.performance.tools.aws.api.SshKeyFormula
 import com.atlassian.performance.tools.awsinfrastructure.IntegrationTestRuntime.aws
 import com.atlassian.performance.tools.awsinfrastructure.IntegrationTestRuntime.taskWorkspace
 import com.atlassian.performance.tools.awsinfrastructure.api.DatasetCatalogue
+import com.atlassian.performance.tools.awsinfrastructure.api.database.DockerDatabaseFormula
 import com.atlassian.performance.tools.awsinfrastructure.api.hardware.C5NineExtraLargeEphemeral
 import com.atlassian.performance.tools.awsinfrastructure.api.storage.JiraServiceDeskStorage
 import org.junit.Test
@@ -30,6 +31,7 @@ class StandaloneFormulaIT {
         )
         val serverFormula = StandaloneFormula.Builder(
             application = JiraServiceDeskStorage("3.9.8"),
+            //TODO change this to database formula
             database = dataset.database,
             jiraHomeSource = dataset.jiraHomeSource
         ).computer(C5NineExtraLargeEphemeral())

@@ -2,12 +2,19 @@ package com.atlassian.performance.tools.awsinfrastructure.api.jira
 
 import com.amazonaws.services.cloudformation.model.Parameter
 import com.amazonaws.services.ec2.model.Tag
+import com.amazonaws.services.rds.model.ModifyDBInstanceRequest
 import com.atlassian.performance.tools.aws.api.*
 import com.atlassian.performance.tools.awsinfrastructure.TemplateBuilder
 import com.atlassian.performance.tools.awsinfrastructure.api.RemoteLocation
+import com.atlassian.performance.tools.awsinfrastructure.api.database.DatabaseFormula
+import com.atlassian.performance.tools.awsinfrastructure.api.database.DatabaseFormula.ProvisionedDatabase
+import com.atlassian.performance.tools.awsinfrastructure.api.database.DockerDatabaseFormula
+import com.atlassian.performance.tools.awsinfrastructure.api.database.RdsDatabase
 import com.atlassian.performance.tools.awsinfrastructure.api.hardware.C4EightExtraLargeElastic
 import com.atlassian.performance.tools.awsinfrastructure.api.hardware.Computer
 import com.atlassian.performance.tools.awsinfrastructure.api.storage.ApplicationStorage
+import com.atlassian.performance.tools.awsinfrastructure.findDBIPAddress
+import com.atlassian.performance.tools.awsinfrastructure.findJiraIPAddresses
 import com.atlassian.performance.tools.awsinfrastructure.jira.StandaloneNodeFormula
 import com.atlassian.performance.tools.awsinfrastructure.pickAvailabilityZone
 import com.atlassian.performance.tools.concurrency.api.submitWithLogContext
@@ -24,36 +31,19 @@ import org.apache.logging.log4j.LogManager
 import org.apache.logging.log4j.Logger
 import java.net.URI
 import java.time.Duration
+import java.util.*
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 
-class StandaloneFormula private constructor(
+class StandaloneFormula (
     private val apps: Apps,
     private val application: ApplicationStorage,
     private val jiraHomeSource: JiraHomeSource,
-    private val database: Database,
+    private val databaseFormula: DatabaseFormula,
     private val config: JiraNodeConfig,
     private val computer: Computer,
     private val stackCreationTimeout: Duration
 ) : JiraFormula {
-
-    @Deprecated(message = "Use StandaloneFormula.Builder instead.")
-    constructor(
-        apps: Apps,
-        application: ApplicationStorage,
-        jiraHomeSource: JiraHomeSource,
-        database: Database,
-        config: JiraNodeConfig,
-        computer: Computer
-    ) : this(
-        apps = apps,
-        application = application,
-        jiraHomeSource = jiraHomeSource,
-        database = database,
-        config = config,
-        computer = computer,
-        stackCreationTimeout = Duration.ofMinutes(30)
-    )
 
     @Deprecated(message = "Use StandaloneFormula.Builder instead.")
     constructor (
@@ -65,9 +55,28 @@ class StandaloneFormula private constructor(
         apps = apps,
         application = application,
         jiraHomeSource = jiraHomeSource,
-        database = database,
         config = JiraNodeConfig.Builder().build(),
         computer = C4EightExtraLargeElastic(),
+        database = database
+    )
+
+    @Deprecated(message = "Use StandaloneFormula.Builder instead.")
+    constructor (
+        apps: Apps,
+        application: ApplicationStorage,
+        jiraHomeSource: JiraHomeSource,
+        database: Database,
+        config: JiraNodeConfig,
+        computer: Computer
+    ) : this(
+        apps = apps,
+        application = application,
+        jiraHomeSource = jiraHomeSource,
+        config = config,
+        databaseFormula = DockerDatabaseFormula(
+            database = database
+        ),
+        computer = computer,
         stackCreationTimeout = Duration.ofMinutes(30)
     )
 
@@ -89,29 +98,40 @@ class StandaloneFormula private constructor(
                 .build()
         )
 
-        val template = TemplateBuilder("single-node.yaml").adaptTo(listOf(config))
+        val template = TemplateBuilder("single-node.yaml")
+            .mergeWith(getCloudFormationTemplateForDatabase(databaseFormula.database), arrayOf("Resources", "Parameters"))
+            .adaptTo(listOf(config))
+
+        val parameters: List<Parameter>;
+
+        val zone1 = aws.pickAvailabilityZone().zoneName
+        val zone2 = aws.pickAvailabilityZone(Collections.singleton(zone1)).zoneName
+
+        parameters  = listOf(
+                Parameter()
+                        .withParameterKey("KeyName")
+                        .withParameterValue(key.get().remote.name),
+                Parameter()
+                        .withParameterKey("InstanceProfile")
+                        .withParameterValue(roleProfile),
+                Parameter()
+                        .withParameterKey("Ami")
+                        .withParameterValue(aws.defaultAmi),
+                Parameter()
+                        .withParameterKey("JiraInstanceType")
+                        .withParameterValue(computer.instanceType.toString()),
+                Parameter()
+                        .withParameterKey("AvailabilityZone1")
+                        .withParameterValue(zone1),
+                Parameter()
+                        .withParameterKey("AvailabilityZone2")
+                        .withParameterValue(zone2))
 
         val stackProvisioning = executor.submitWithLogContext("provision stack") {
             StackFormula(
                 investment = investment,
                 cloudformationTemplate = template,
-                parameters = listOf(
-                    Parameter()
-                        .withParameterKey("KeyName")
-                        .withParameterValue(key.get().remote.name),
-                    Parameter()
-                        .withParameterKey("InstanceProfile")
-                        .withParameterValue(roleProfile),
-                    Parameter()
-                        .withParameterKey("Ami")
-                        .withParameterValue(aws.defaultAmi),
-                    Parameter()
-                        .withParameterKey("JiraInstanceType")
-                        .withParameterValue(computer.instanceType.toString()),
-                    Parameter()
-                        .withParameterKey("AvailabilityZone")
-                        .withParameterValue(aws.pickAvailabilityZone().zoneName)
-                ),
+                parameters = parameters,
                 aws = aws,
                 pollingTimeout = stackCreationTimeout
             ).provision()
@@ -121,34 +141,25 @@ class StandaloneFormula private constructor(
             apps.listFiles().forEach { pluginsTransport.upload(it) }
         }
 
-        val jiraStack = stackProvisioning.get()
-        val keyPath = key.get().file.path
+        val jiraStack: ProvisionedStack = stackProvisioning.get()
 
         val machines = jiraStack.listMachines()
-        val databaseIp = machines.single { it.tags.contains(Tag("jpt-database", "true")) }.publicIpAddress
-        val databaseHost = SshHost(databaseIp, "ubuntu", keyPath)
-        val databaseSsh = Ssh(databaseHost, connectivityPatience = 4)
-        val jiraIp = machines.single { it.tags.contains(Tag("jpt-jira", "true")) }.publicIpAddress
+
+        val jiraIp = jiraStack.findJiraIPAddresses(aws).single()
+        val databaseIp = jiraStack.findDBIPAddress(aws)
         val jiraAddress = URI("http://$jiraIp:8080/")
 
-        val setupDatabase = executor.submitWithLogContext("database") {
-            databaseSsh.newConnection().use {
-                logger.info("Setting up database...")
-                key.get().file.facilitateSsh(databaseIp)
-                val location = database.setup(it)
-                logger.info("Database is set up")
-                logger.info("Starting database...")
-                database.start(jiraAddress, it)
-                logger.info("Database is started")
-                RemoteLocation(databaseHost, location)
-            }
-        }
-
+        val keyPath = key.get().file.path
         val ssh = Ssh(SshHost(jiraIp, "ubuntu", keyPath), connectivityPatience = 5)
 
         CloseableThreadContext.push("Jira node").use {
             key.get().file.facilitateSsh(jiraIp)
         }
+
+        val futureProvisionedDatabase: Future<ProvisionedDatabase> = executor.submitWithLogContext("database") {
+            databaseFormula.provision(key.get(), jiraAddress, jiraStack, aws)
+        }
+
         val nodeFormula = StandaloneNodeFormula(
             config = config,
             jiraHomeSource = jiraHomeSource,
@@ -157,14 +168,16 @@ class StandaloneFormula private constructor(
             databaseIp = databaseIp,
             application = application,
             ssh = ssh,
-            computer = computer
+            computer = computer,
+            isRds = RdsDatabase::class.isInstance(databaseFormula.database)
         )
 
         uploadPlugins.get()
 
         val provisionedNode = nodeFormula.provision()
 
-        val databaseDataLocation = setupDatabase.get()
+        val provisionedDatabase: ProvisionedDatabase = futureProvisionedDatabase.get()
+        val remoteDatabaseDataLocation = provisionedDatabase.remoteDatabaseDataLocation
         executor.shutdownNow()
         val node = time("start") { provisionedNode.start() }
 
@@ -174,7 +187,7 @@ class StandaloneFormula private constructor(
                 ssh.host,
                 provisionedNode.jiraHome
             ),
-            database = databaseDataLocation,
+            database = remoteDatabaseDataLocation,
             address = jiraAddress,
             jmxClients = listOf(config.remoteJmx.getClient(jiraIp))
         )
@@ -202,7 +215,7 @@ class StandaloneFormula private constructor(
             apps = apps,
             application = application,
             jiraHomeSource = jiraHomeSource,
-            database = database,
+            databaseFormula = DockerDatabaseFormula(database),
             config = config,
             computer = computer,
             stackCreationTimeout = stackCreationTimeout

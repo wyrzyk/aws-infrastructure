@@ -5,7 +5,9 @@ plugins {
     `java-library`
     id("com.atlassian.performance.tools.gradle-release").version("0.4.3")
 }
-
+repositories {
+    mavenLocal()
+}
 configurations.all {
     resolutionStrategy {
         activateDependencyLocking()
@@ -32,7 +34,7 @@ configurations.all {
 
 dependencies {
     api("com.atlassian.performance.tools:infrastructure:[4.5.0,5.0.0)")
-    api("com.atlassian.performance.tools:aws-resources:[1.1.1,2.0.0)")
+    api("com.atlassian.performance.tools:aws-resources:[1.3.5,2.0.0)")
     api("com.atlassian.performance.tools:jira-actions:[2.0.0,4.0.0)")
     api("com.atlassian.performance.tools:ssh:[2.0.0,3.0.0)")
     api("com.atlassian.performance.tools:virtual-users:[3.3.0,4.0.0)")
@@ -42,6 +44,7 @@ dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8:$kotlinVersion")
     implementation("org.glassfish:javax.json:1.1")
     implementation("com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:2.9.4")
+    implementation("org.jetbrains.kotlin:kotlin-reflect")
     log4j(
         "api",
         "core",

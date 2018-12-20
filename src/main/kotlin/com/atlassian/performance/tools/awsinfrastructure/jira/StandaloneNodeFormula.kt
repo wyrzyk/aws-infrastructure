@@ -4,6 +4,7 @@ import com.atlassian.performance.tools.aws.api.Storage
 import com.atlassian.performance.tools.awsinfrastructure.AwsCli
 import com.atlassian.performance.tools.awsinfrastructure.api.hardware.Computer
 import com.atlassian.performance.tools.awsinfrastructure.api.storage.ApplicationStorage
+import com.atlassian.performance.tools.awsinfrastructure.api.storage.S3Artifact
 import com.atlassian.performance.tools.infrastructure.api.Sed
 import com.atlassian.performance.tools.infrastructure.api.jira.JiraGcLog
 import com.atlassian.performance.tools.infrastructure.api.jira.JiraHomeSource
@@ -27,13 +28,37 @@ internal class StandaloneNodeFormula(
     private val application: ApplicationStorage,
     private val ssh: Ssh,
     private val config: JiraNodeConfig,
-    private val computer: Computer
+    private val computer: Computer,
+    private val isRds: Boolean
 ) : NodeFormula {
     private val logger: Logger = LogManager.getLogger(this::class.java)
     private val jdk = config.jdk
     private val ubuntu: Ubuntu = Ubuntu()
 
     override val name = config.name
+
+
+    constructor (
+            jiraHomeSource: JiraHomeSource,
+            pluginsTransport: Storage,
+            resultsTransport: Storage,
+            databaseIp: String,
+            application: ApplicationStorage,
+            ssh: Ssh,
+            config: JiraNodeConfig,
+            computer: Computer
+    ) : this(
+            jiraHomeSource = jiraHomeSource,
+            pluginsTransport = pluginsTransport,
+            resultsTransport = resultsTransport,
+            databaseIp = databaseIp,
+            application = application,
+            ssh = ssh,
+            config = config,
+            computer = computer,
+            isRds = false
+    )
+
 
     override fun provision(): StandaloneStoppedNode {
         logger.info("Setting up $name...")
@@ -44,21 +69,48 @@ internal class StandaloneNodeFormula(
             val jiraHome = TaskTimer.time("download Jira home") {
                 jiraHomeSource.download(connection)
             }
+            connection.execute("tar -xzf $jiraArchiveName", Duration.ofMinutes(1))
             val unpackedProduct = getUnpackedProductName(connection, jiraArchiveName)
 
-            replaceDbconfigUrl(connection, "$jiraHome/dbconfig.xml")
-            connection.execute("tar -xzf $jiraArchiveName", Duration.ofMinutes(1))
-            SetenvSh(unpackedProduct).setup(
-                connection = connection,
-                config = config,
-                gcLog = JiraGcLog(unpackedProduct),
-                jiraIp = ssh.host.ipAddress
-            )
             connection.execute("echo jira.home=`realpath $jiraHome` > $unpackedProduct/atlassian-jira/WEB-INF/classes/jira-application.properties")
             connection.execute("echo jira.autoexport=false > $jiraHome/jira-config.properties")
-            downloadMysqlConnector("https://dev.mysql.com/get/Downloads/Connector-J/mysql-connector-java-5.1.40.tar.gz", connection)
-            connection.execute("tar -xzf mysql-connector-java-5.1.40.tar.gz")
-            connection.execute("cp mysql-connector-java-5.1.40/mysql-connector-java-5.1.40-bin.jar $unpackedProduct/lib")
+            SetenvSh(unpackedProduct).setup(
+                    connection = connection,
+                    config = config,
+                    gcLog = JiraGcLog(unpackedProduct),
+                    jiraIp = ssh.host.ipAddress
+            )
+            if(isRds) {
+                S3Artifact(
+                        region = "eu-central-1",
+                        bucketName = "jpt-oracle-test",
+                        archivesLocation = "test",
+                        archiveName = "dbconfig.xml"
+                ).download(connection, "~/")
+
+                S3Artifact(
+                        region = "eu-central-1",
+                        bucketName = "jpt-oracle-test",
+                        archivesLocation = "test",
+                        archiveName = "ojdbc8.jar"
+                ).download(connection, "~/")
+
+                Sed().replace(
+                        connection = connection,
+                        expression = "URLLLL",
+                        output = "<url>jdbc:oracle:thin:@//" + databaseIp + "/ORCL_A</url>",
+                        file = "~/dbconfig.xml"
+                )
+
+                connection.execute("rm $jiraHome/dbconfig.xml")
+                connection.execute("cp ~/dbconfig.xml $jiraHome/")
+                connection.execute("cp ojdbc8.jar $unpackedProduct/lib")
+            } else {
+                replaceDbconfigUrl(connection, "$jiraHome/dbconfig.xml")
+                downloadMysqlConnector("https://dev.mysql.com/get/Downloads/Connector-J/mysql-connector-java-5.1.40.tar.gz", connection)
+                connection.execute("tar -xzf mysql-connector-java-5.1.40.tar.gz")
+                connection.execute("cp mysql-connector-java-5.1.40/mysql-connector-java-5.1.40-bin.jar $unpackedProduct/lib")
+            }
             AwsCli().download(pluginsTransport.location, connection, target = "$jiraHome/plugins/installed-plugins")
 
             jdk.install(connection)

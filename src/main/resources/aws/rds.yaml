@@ -1,0 +1,33 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: DB running on RDS.
+Resources:
+  Database:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBSnapshotIdentifier: arn:aws:rds:eu-central-1:695067801333:snapshot:jpt-micro-oracledb
+      Tags:
+        - Key: jpt-database
+          Value: true
+  SubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for rds
+      SubnetIds:
+        - Ref: Subnet1
+        - Ref: Subnet2
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId:
+        Ref: VPC
+      GroupDescription: Enables Database access
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 1521
+          ToPort: 1521
+          CidrIp: 0.0.0.0/0
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 1521
+          ToPort: 1521
+          CidrIp: 0.0.0.0/0
