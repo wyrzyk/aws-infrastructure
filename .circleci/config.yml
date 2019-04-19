@@ -22,8 +22,10 @@ jobs:
           no_output_timeout: 45m
       - store_artifacts:
           path: ./build/reports/tests
-          path: ./build/detailed.log
           destination: test-reports
+      - store_artifacts:
+          path: ./build/detailed.log
+          destination: detailed.log
       - store_test_results:
           path: ./build/test-results
   release:
